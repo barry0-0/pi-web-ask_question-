@@ -388,3 +388,64 @@ codesign -fs - / codesign --verify                → valid on disk
 
 未双击执行启动器完整启停链路（会结束当前会话）；0.16.0 启动后的真实问卷走查；
 未来 pi-web 大版本新增 profile；Safari 新版本 chunk 的缓存行为。
+
+## 插件化与正式切换（v6）
+
+执行时间：2026-11-13。用户给出 GitHub 地址，要求把目录改名为 `ask_question`、
+写成独立插件仓库、写全功能 README 与截图、推送；随后把当前 pi 用的 ask 工具
+换成自己的插件。
+
+### 只读诊断
+
+```text
+SSH 认证      : Hi barry0-0，通过
+远程仓库      : 空仓库，无分支
+Chrome        : /Applications/Google Chrome.app 可用
+旧扩展加载    : ~/.pi/agent/extensions/rpiv-ask-user-question/（目录自动发现）
+pi install    : 支持 git:git@github.com:user/repo
+依赖          : @juicesharp/rpiv-config@2.15.0 在 npm 可用
+```
+
+### 改动
+
+| 项 | 结果 |
+|---|---|
+| 目录 | `pi-web-patch` → `~/Desktop/工作/ask_question/` |
+| 仓库结构 | 根目录为扩展源码；`host/` 注入器；`tools/` 脚本；`meta/` 文档与截图；`snapshot/` 自愈副本 |
+| `host/patch-host.ts` | 新增。插件加载时定位 pi-web、调用结构推导注入器、幂等重打补丁 |
+| `host/apply.py` | 从写死 profile 改为结构正则自动推导；占位符代入；元数据剥离 |
+| `index.ts` | 注册工具后调用 `patchHost()`，失败不抛异常 |
+| `package.json` | 新包名 `pi-web-ask-question`，仓库字段 |
+| `README.md` | 全功能说明 + 3 张截图 |
+| `AGENTS.md`、`.gitignore` | 项目操作卡与忽略规则 |
+
+### 证据
+
+```text
+node host/verify.cjs                                  → 73 项通过
+node --experimental-strip-types tools/verify-rpc.cjs  → 24 项通过
+python3 host/apply.py --check（0.15.x / 0.16.x）       → 自动推导成功
+模拟 0.17 变量名整组替换                              → 推导与注入通过，SIM017_SYNTAX_OK
+./tools/deploy.sh --capture / deploy.sh                → 64 文件捕获、67 项回读一致
+受限 PATH 跑 bootstrap.sh                             → rc=0
+截图                                                  → 3 张 860×860 PNG，真实组件 SSR 渲染
+
+git commit dd9f638 → push -u origin main              → 远程 HEAD 一致
+pi install git:git@github.com:barry0-0/pi-web-ask_question-  → 安装成功
+旧目录 → ~/.pi/agent/extensions.disabled/rpiv-ask-user-question-20261113-145653
+
+模拟 npm 升级覆盖 0.16.0 chunk 后调用 patchHost()：
+  覆盖后 marker=0 version4=0 → 注入完成 → marker=1 version4=1，node --check 通过
+  日志 ~/Library/Logs/pi-web-ask_question.log 记录「注入完成」
+  备份 ~/.pi/agent/ask-question-backups/page-b6e1971ef45064ff.js.bak-20261113-145734
+```
+
+### 生效条件
+
+扩展在进程启动时加载。本轮不重启、不停止服务。服务进程保持 `13:46:06`。
+用户自行重启后，新插件才接管 `ask_user_question`。
+
+### 未覆盖范围
+
+未双击启动器完整启停链路；重启后新插件的真实问卷走查；
+未来 Next.js 渲染结构变化（非变量名变化）需新增结构规则。
