@@ -63,11 +63,17 @@ const NATIVE_UNCHECKED = "□ ";
 const NATIVE_CHECKED = "☑ ";
 
 /**
- * Pi GPUI starts pi with `--extension .../pi-gpui-bridge.ts`. pi-web's launcher
- * sets PI_WEB_NO_OPEN=1 and never passes that bridge. Detection failure keeps
- * the original one-shot plain-host path, so pi-web stays byte-identical.
+ * Pi GPUI launches pi from the .app, so the child inherits
+ * __CFBundleIdentifier=dev.pi-gpui.app. pi rewrites process.argv and can drop
+ * the `--extension .../pi-gpui-bridge.ts` arg, so the bundle id is the primary
+ * signal. The desktop "Pi 开关" launcher uses local.pi.switch and owns pi-web;
+ * that marker and PI_WEB_NO_OPEN=1 veto the native stepper. Detection failure
+ * keeps the original one-shot plain-host path, so pi-web stays byte-identical.
  */
 function detectNativeStepHost(): boolean {
+	const bundle = process.env.__CFBundleIdentifier;
+	if (bundle === "dev.pi-gpui.app") return true;
+	if (bundle === "local.pi.switch") return false;
 	if (process.env.PI_WEB_NO_OPEN === "1") return false;
 	try {
 		return process.argv.some((arg) => /pi-gpui-bridge\.ts$/i.test(arg));
