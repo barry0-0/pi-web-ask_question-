@@ -505,14 +505,20 @@ pi-web chunk marker=1 v4=1，node --check 通过
 ./tools/deploy.sh --capture / deploy.sh                     → 196 项回读一致
 git diff --check                                            → OK
 服务进程未重启：pi-web PID 95063，Pi GPUI PID 91984
+git push origin main                                        → 22bdc2f..9c096d0
+远程 HEAD                                                    → 9c096d07f9ed14fe9b4ccdb0200d1549d2864206
+已安装插件 git pull --ff-only                                → HEAD 9c096d0
+已安装 rpc-fallback.ts 含 NATIVE_BACK_LABEL                   → 7 处
+已安装 host/apply.py 含 default_app_dir                       → 2 处
+运行时副本 apply.py 含 default_app_dir                        → 2 处
 ```
 
 ### 生效条件
 
-扩展在 pi 进程启动时加载。本轮不重启 Pi GPUI，不结束当前会话。
-用户自行 `⌘⇧R` 或重启会话后生效。
+扩展在 pi 进程启动时加载。仓库、已安装插件、运行时副本均已到 `9c096d0`。
+本轮不重启 Pi GPUI，不结束当前会话。用户自行 `⌘⇧R` 或重启会话后生效。
 
 ### 未覆盖范围
 
 重启后 Pi GPUI 真实点击流；`□` / `☑` 在多语言字体下的显示；
-未来 Pi GPUI 改 `extension_ui_request` 的 `select` 协议；GitHub 推送与安装目录同步未执行。
+未来 Pi GPUI 改 `extension_ui_request` 的 `select` 协议；Pi GPUI 真实点击流需用户 `⌘⇧R` 后走查。
