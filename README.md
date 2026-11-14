@@ -40,7 +40,7 @@ Pi Web 在 RPC 模式下只给扩展 `ui.select` / `ui.input`。这两个接口�
 
 升级 pi-web 后 chunk 被覆盖。下一次插件加载自动重打补丁，无需人工干预。
 
-Pi GPUI 0.2.x 用 Rust / GPUI 原生渲染 `extension_ui_request`。它不读 pi-web chunk。插件检测到 `pi-gpui-bridge.ts` 后启用原生步进，用 `ui.select` 的选项行模拟导航与多选。`PI_WEB_NO_OPEN=1` 时强制关闭该层，pi-web 路径不变。
+Pi GPUI 0.2.x 用 Rust / GPUI 原生渲染 `extension_ui_request`。它不读 pi-web chunk。插件检测到 `dev.pi-gpui.app` 或 `pi-gpui-bridge.ts` 后启用原生步进，用 `ui.select` 的选项行模拟导航与多选。`local.pi.switch` 与 `PI_WEB_NO_OPEN=1` 强制关闭该层，pi-web 路径不变。
 
 ## 功能
 
@@ -104,7 +104,8 @@ Pi GPUI 0.2.x 用 Rust / GPUI 原生渲染 `extension_ui_request`。它不读 pi
 
 ### Pi GPUI 原生步进
 
-触发条件：`process.argv` 含 `pi-gpui-bridge.ts`，且 `PI_WEB_NO_OPEN !== "1"`。检测失败时保持原路径。
+触发条件：`__CFBundleIdentifier === "dev.pi-gpui.app"`，或 `process.argv` 含 `pi-gpui-bridge.ts`。
+`local.pi.switch` 与 `PI_WEB_NO_OPEN=1` 强制关闭，保护 pi-web。检测失败时保持原路径。
 
 | 控件 | 行为 |
 | --- | --- |

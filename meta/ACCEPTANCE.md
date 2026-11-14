@@ -522,3 +522,51 @@ git push origin main                                        → 22bdc2f..9c096d0
 
 重启后 Pi GPUI 真实点击流；`□` / `☑` 在多语言字体下的显示；
 未来 Pi GPUI 改 `extension_ui_request` 的 `select` 协议；Pi GPUI 真实点击流需用户 `⌘⇧R` 后走查。
+
+## 宿主判定修复（v7.1）
+
+执行时间：2026-11-14。用户重发问卷后仍见旧界面。只读核对确认新代码已加载，非重载问题。
+
+### 诊断
+
+```text
+安装目录 reflog : 14:08:18 / 14:09:31 → 9c096d0 / 05ec33b
+当前 pi 进程    : 5873，启动 14:10:45（晚于同步）
+环境            : __CFBundleIdentifier=dev.pi-gpui.app；无 PI_WEB_NO_OPEN
+失败点          : detectNativeStepHost() 只查 process.argv 的 bridge 路径；pi CLI 改写 argv 后取不到
+结论            : 新代码已加载，判定返回 false，落回旧一次一选路径；重启不能修复
+```
+
+### 改动
+
+| 文件 | 改动 |
+| --- | --- |
+| `rpc-fallback.ts` | `dev.pi-gpui.app` 正向启用；`local.pi.switch` 否决；保留 `PI_WEB_NO_OPEN` 与 argv 兜底 |
+| `tools/verify-rpc.cjs` | 测试进程清除宿主标记；新增场景 18/19，共 33 项 |
+| `README.md` | 触发条件改为 bundle id 优先 |
+| `meta/ACCEPTANCE.md` | 本条 |
+| `handoff/TURNS-2026-11.md` | `T-20261114-02` |
+
+### 证据
+
+```text
+node --experimental-strip-types --check rpc-fallback.ts   → OK
+node --experimental-strip-types tools/verify-rpc.cjs       → 33 项通过
+  场景 18：dev.pi-gpui.app 正向判定启用原生步进
+  场景 19：local.pi.switch 否决，pi-web 路径不变
+node host/verify.cjs                                      → 73 项通过
+python3 host/apply.py --check（默认 / 0.16 app-dir）       → 自动推导成功
+pi-web chunk marker=1 v4=1，node --check 通过
+git diff --check                                            → OK
+提交后执行 git push origin main、已安装插件 git pull --ff-only、deploy.sh 同步
+服务进程未重启
+```
+
+### 生效条件
+
+扩展在 pi 进程启动时加载。修复需用户 `⌘Q` 退出并重新打开 Pi GPUI，或新建会话后生效。
+本轮不重启、不结束会话。
+
+### 未覆盖范围
+
+重开后 Pi GPUI 真实点击流；`□` / `☑` 多语言字体显示；未来 Pi GPUI 改 bundle id 或 `select` 协议。

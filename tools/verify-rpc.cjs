@@ -77,6 +77,9 @@ function allTitlesHaveMarker(calls, index, count) {
 
 async function main() {
 	const { runRpcQuestionnaire } = await import(pathToFileURL(EXT).href);
+	// 本测试进程常驻 Pi GPUI 环境。先清除宿主标记，保证既有场景走默认 plain 路径。
+	const savedBundle = process.env.__CFBundleIdentifier;
+	delete process.env.__CFBundleIdentifier;
 
 	/* 场景 1：答 Q1 → 到 Q2 点回退 → 重选 Q1 → 再答 Q2 → 直接结束 */
 	{
@@ -335,6 +338,41 @@ async function main() {
 			&& ui.remaining === 0,
 			"场景17：Pi GPUI 多选修答时重问当前题");
 	}
+
+	/* 场景 18：__CFBundleIdentifier 正向判定 Pi GPUI */
+	{
+		process.env.__CFBundleIdentifier = "dev.pi-gpui.app";
+		const ui = scriptedUi([
+			{ kind: "select", reply: (c) => c.options[0] },
+			{ kind: "select", reply: (c) => c.options.find((o) => o === "完成选择 →") }
+		]);
+		const result = await runRpcQuestionnaire(ui, { questions: questions(1, true) });
+		delete process.env.__CFBundleIdentifier;
+		ok(result.cancelled === false
+			&& ui.calls[0].options.includes("完成选择 →")
+			&& ui.calls[0].options[0].includes("□ 选项 1A")
+			&& JSON.stringify(result.answers[0].selected) === JSON.stringify(["选项 1A"])
+			&& ui.remaining === 0,
+			"场景18：dev.pi-gpui.app 正向判定启用原生步进");
+	}
+
+	/* 场景 19：pi-web 桌面开关标记否决 */
+	{
+		const savedArgv = process.argv.slice();
+		process.env.__CFBundleIdentifier = "local.pi.switch";
+		process.argv.push("/tmp/pi-gpui-bridge.ts");
+		const ui = scriptedUi([{ kind: "select", reply: (c) => c.options[0] }]);
+		const result = await runRpcQuestionnaire(ui, { questions: questions(1, true) });
+		process.argv = savedArgv;
+		delete process.env.__CFBundleIdentifier;
+		ok(result.cancelled === false
+			&& ui.calls[0].options.length === 3
+			&& !ui.calls[0].options.includes("完成选择 →"),
+			"场景19：local.pi.switch 否决，pi-web 富卡片路径不变");
+	}
+
+	if (savedBundle === undefined) delete process.env.__CFBundleIdentifier;
+	else process.env.__CFBundleIdentifier = savedBundle;
 
 	console.log("");
 	if (failed) {
