@@ -449,3 +449,70 @@ pi install git:git@github.com:barry0-0/pi-web-ask_question-  → 安装成功
 
 未双击启动器完整启停链路；重启后新插件的真实问卷走查；
 未来 Next.js 渲染结构变化（非变量名变化）需新增结构规则。
+
+## Pi GPUI 原生步进兼容（v7）
+
+执行时间：2026-11-14。用户切换到 Pi GPUI 0.2.3，发现无上一题/下一题、无富卡片控件。
+用户批准方案 A：只改扩展状态机，不改 Pi GPUI 源码。用户追问 pi-web 是否仍可用。
+
+### 只读诊断
+
+```text
+宿主        : /Applications/Pi GPUI.app 0.2.3，Rust / GPUI
+渲染源码    : src/chat/dialog.rs；select 只画文本行与高亮，无 radio / checkbox
+启动参数    : pi --mode rpc --extension .../pi-gpui-bridge.ts
+pi-web 标记 : PI_WEB_NO_OPEN=1（桌面开关 launcher）
+富卡片补丁  : host/apply.py 只改 pi-web chunk，对 Pi GPUI 无效
+pi-web 运行 : 0.16.0，PID 95063，chunk page-b6e1971ef45064ff.js
+```
+
+### 改动
+
+| 文件 | 改动 |
+| --- | --- |
+| `rpc-fallback.ts` | 新增 `detectNativeStepHost()`；`runRpcQuestionnaire` 第三参数；单选/多选原生步进 |
+| `tools/verify-rpc.cjs` | 新增 7 个场景，共 31 项 |
+| `host/apply.py` | `default_app_dir()` 改为 npm 全局 root 动态定位；旧 `~/.local` 安装已被清理 |
+| `host/verify.cjs` | React 模块路径改为 npm root 动态定位 |
+| `README.md` | Pi GPUI 原生步进、宿主隔离、已知限制 |
+| `meta/ACCEPTANCE.md` | 本条 |
+| `handoff/TURNS-2026-11.md` | `T-20261114-01` |
+| `snapshot/`、运行时副本 | `./tools/deploy.sh --capture` / `deploy.sh` 同步，196 项回读一致 |
+
+### 隔离规则
+
+- 仅 `process.argv` 含 `pi-gpui-bridge.ts` 且 `PI_WEB_NO_OPEN !== "1"` 时启用原生步进。
+- `PI_WEB_NO_OPEN=1` 优先关闭。检测失败默认 `false`。
+- `host/rich_dialog_web.js` 未改。两个 pi-web chunk 未重注入。
+- 非原生宿主的 `options` 数量、标题、`__piRich` 信封路径不变。
+- 场景 11 验证默认宿主选项不变；场景 12 验证 `PI_WEB_NO_OPEN=1` 优先。
+
+### 证据
+
+```text
+node --experimental-strip-types --check rpc-fallback.ts   → OK
+node --experimental-strip-types --check ask-user-question.ts → OK
+node host/verify.cjs                                      → 73 项通过
+node --experimental-strip-types tools/verify-rpc.cjs       → 31 项通过
+  场景 13：上一题、回填、沿用上次答案
+  场景 14：□/☑ 累加后提交
+  场景 15：多选回退后回填勾选态
+  场景 16：自由输入行自定义文本
+  场景 17：空答案重问当前题
+python3 host/apply.py --check（默认 / 指定 0.16 app-dir）  → 自动推导成功
+./tools/apply.sh --check                                    → 自动推导成功
+pi-web chunk marker=1 v4=1，node --check 通过
+./tools/deploy.sh --capture / deploy.sh                     → 196 项回读一致
+git diff --check                                            → OK
+服务进程未重启：pi-web PID 95063，Pi GPUI PID 91984
+```
+
+### 生效条件
+
+扩展在 pi 进程启动时加载。本轮不重启 Pi GPUI，不结束当前会话。
+用户自行 `⌘⇧R` 或重启会话后生效。
+
+### 未覆盖范围
+
+重启后 Pi GPUI 真实点击流；`□` / `☑` 在多语言字体下的显示；
+未来 Pi GPUI 改 `extension_ui_request` 的 `select` 协议；GitHub 推送与安装目录同步未执行。

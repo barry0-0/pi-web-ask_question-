@@ -4,7 +4,8 @@
  * 运行：node --experimental-strip-types verify-rpc.js
  *
  * 覆盖：相邻回退、答案覆盖、末题直接提交、无复核卡、单选/多选控件化、
- *       多选 selected 信封、必答重问、取消、单题、plain host 数字串路径。
+ *       多选 selected 信封、必答重问、取消、单题、plain host 数字串路径、
+ *       Pi GPUI 原生步进、宿主隔离、多选累加与回填。
  */
 const path = require("path");
 const { pathToFileURL } = require("url");
@@ -211,6 +212,128 @@ async function main() {
 			&& JSON.stringify(result.answers[0].selected) === JSON.stringify(["选项 1A", "选项 1B"])
 			&& result.answers[0].answer === "补充",
 			"场景10：select 框直接键入数字串也解析为多选答案");
+	}
+
+	/* 场景 11：默认宿主不追加原生步进行，pi-web 路径不变 */
+	{
+		const ui = scriptedUi([{ kind: "select", reply: (c) => c.options[0] }]);
+		const result = await runRpcQuestionnaire(ui, { questions: questions(1) });
+		ok(result.cancelled === false
+			&& ui.calls[0].options.length === 3
+			&& !ui.calls[0].options.includes("← 上一题")
+			&& !ui.calls[0].options.includes("完成选择 →"),
+			"场景11：默认宿主不追加原生步进行（pi-web 路径不变）");
+	}
+
+	/* 场景 12：pi-web 启动标记优先于 bridge 参数 */
+	{
+		const savedEnv = process.env.PI_WEB_NO_OPEN;
+		const savedArgv = process.argv.slice();
+		process.env.PI_WEB_NO_OPEN = "1";
+		process.argv.push("/tmp/pi-gpui-bridge.ts");
+		const ui = scriptedUi([{ kind: "select", reply: (c) => c.options[0] }]);
+		const result = await runRpcQuestionnaire(ui, { questions: questions(1) });
+		process.argv = savedArgv;
+		if (savedEnv === undefined) delete process.env.PI_WEB_NO_OPEN;
+		else process.env.PI_WEB_NO_OPEN = savedEnv;
+		ok(result.cancelled === false
+			&& ui.calls[0].options.length === 3
+			&& !ui.calls[0].options.includes("← 上一题"),
+			"场景12：PI_WEB_NO_OPEN=1 时即使带 bridge 也保持 pi-web 路径");
+	}
+
+	/* 场景 13：Pi GPUI 单选，上一题 + 沿用上次答案 */
+	{
+		const ui = scriptedUi([
+			{ kind: "select", reply: (c) => c.options[0] },
+			{ kind: "select", reply: (c) => c.options.find((o) => o === "← 上一题") },
+			{ kind: "select", reply: (c) => c.options.find((o) => o === "沿用上次答案 →") },
+			{ kind: "select", reply: (c) => c.options[1] }
+		]);
+		const result = await runRpcQuestionnaire(ui, { questions: questions(2) }, true);
+		ok(result.cancelled === false
+			&& result.answers.length === 2
+			&& result.answers[0].answer === "选项 1A"
+			&& result.answers[1].answer === "选项 2B"
+			&& ui.calls[1].options.includes("← 上一题")
+			&& ui.calls[2].options.includes("沿用上次答案 →")
+			&& ui.calls[2].title.includes("上次：选项 1A")
+			&& ui.remaining === 0,
+			"场景13：Pi GPUI 单选可上一题、回填、沿用上次答案");
+	}
+
+	/* 场景 14：Pi GPUI 多选，□/☑ 累加后完成选择 */
+	{
+		const ui = scriptedUi([
+			{ kind: "select", reply: (c) => c.options[0] },
+			{ kind: "select", reply: (c) => c.options[1] },
+			{ kind: "select", reply: (c) => c.options.find((o) => o === "完成选择 →") }
+		]);
+		const result = await runRpcQuestionnaire(ui, { questions: questions(1, true) }, true);
+		ok(result.cancelled === false
+			&& JSON.stringify(result.answers[0].selected) === JSON.stringify(["选项 1A", "选项 1B"])
+			&& result.answers[0].answer === null
+			&& ui.calls[0].options[0].includes("□ 选项 1A")
+			&& ui.calls[1].options[0].includes("☑ 选项 1A")
+			&& ui.calls[1].options[1].includes("□ 选项 1B")
+			&& ui.calls[2].options[1].includes("☑ 选项 1B")
+			&& ui.remaining === 0,
+			"场景14：Pi GPUI 多选 □/☑ 累加后提交");
+	}
+
+	/* 场景 15：Pi GPUI 多选回退后回填勾选态 */
+	{
+		const qs = [
+			questions(1, true)[0],
+			{ ...questions(1, false)[0], question: "问题 2？", header: "题2" }
+		];
+		const ui = scriptedUi([
+			{ kind: "select", reply: (c) => c.options[0] },
+			{ kind: "select", reply: (c) => c.options.find((o) => o === "完成选择 →") },
+			{ kind: "select", reply: (c) => c.options.find((o) => o === "← 上一题") },
+			{ kind: "select", reply: (c) => c.options.find((o) => o === "沿用上次答案 →") },
+			{ kind: "select", reply: (c) => c.options[0] }
+		]);
+		const result = await runRpcQuestionnaire(ui, { questions: qs }, true);
+		ok(result.cancelled === false
+			&& result.answers.length === 2
+			&& JSON.stringify(result.answers[0].selected) === JSON.stringify(["选项 1A"])
+			&& result.answers[1].answer === "选项 1A"
+			&& ui.calls[3].options[0].includes("☑ 选项 1A")
+			&& ui.calls[3].options.includes("沿用上次答案 →")
+			&& ui.calls[3].title.includes("上次：选项 1A")
+			&& ui.remaining === 0,
+			"场景15：Pi GPUI 多选回退后回填勾选态");
+	}
+
+	/* 场景 16：Pi GPUI 多选自定义文本 */
+	{
+		const ui = scriptedUi([
+			{ kind: "select", reply: (c) => c.options[2] },
+			{ kind: "input", reply: "补充" },
+			{ kind: "select", reply: (c) => c.options.find((o) => o === "完成选择 →") }
+		]);
+		const result = await runRpcQuestionnaire(ui, { questions: questions(1, true) }, true);
+		ok(result.cancelled === false
+			&& result.answers[0].answer === "补充"
+			&& JSON.stringify(result.answers[0].selected) === JSON.stringify([])
+			&& ui.remaining === 0,
+			"场景16：Pi GPUI 多选经其他行输入自定义文本");
+	}
+
+	/* 场景 17：Pi GPUI 多选修答时重问当前题 */
+	{
+		const ui = scriptedUi([
+			{ kind: "select", reply: (c) => c.options.find((o) => o === "完成选择 →") },
+			{ kind: "select", reply: (c) => c.options[0] },
+			{ kind: "select", reply: (c) => c.options.find((o) => o === "完成选择 →") }
+		]);
+		const result = await runRpcQuestionnaire(ui, { questions: questions(1, true) }, true);
+		ok(result.cancelled === false
+			&& JSON.stringify(result.answers[0].selected) === JSON.stringify(["选项 1A"])
+			&& ui.calls.length === 3
+			&& ui.remaining === 0,
+			"场景17：Pi GPUI 多选修答时重问当前题");
 	}
 
 	console.log("");

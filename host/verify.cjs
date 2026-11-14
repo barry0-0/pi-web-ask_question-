@@ -7,11 +7,32 @@
 const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
+const { execFileSync } = require("child_process");
 
-const PI_WEB_MODULES = path.join(
-	process.env.HOME,
-	".local/lib/node_modules/@agegr/pi-web/node_modules"
-);
+function piWebModules() {
+	const roots = [];
+	try {
+		const root = execFileSync("npm", ["root", "-g"], {
+			encoding: "utf8",
+			timeout: 5000
+		}).trim();
+		if (root) roots.push(root);
+	} catch {
+		// npm 不可用时走常见安装目录。
+	}
+	roots.push(
+		"/opt/homebrew/lib/node_modules",
+		"/usr/local/lib/node_modules",
+		path.join(process.env.HOME, ".local/lib/node_modules")
+	);
+	for (const root of [...new Set(roots)]) {
+		const candidate = path.join(root, "@agegr/pi-web/node_modules");
+		if (fs.existsSync(path.join(candidate, "react"))) return candidate;
+	}
+	throw new Error("未找到 pi-web 自带的 react / react-dom");
+}
+
+const PI_WEB_MODULES = process.env.PI_ASK_PI_WEB_MODULES || piWebModules();
 const React = require(path.join(PI_WEB_MODULES, "react"));
 const ReactDOM = require(path.join(PI_WEB_MODULES, "react-dom"));
 const ReactDOMServer = require(path.join(PI_WEB_MODULES, "react-dom/server"));

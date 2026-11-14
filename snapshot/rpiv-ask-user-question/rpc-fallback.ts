@@ -15,14 +15,17 @@
  * side-by-side preview pane (previews are folded into the prompt title) and no
  * tabbed multi-question view (one dialog per question). `ui.select()` only returns
  * one string, so multi-select uses a `{"__piRich":1,"selected":[...]}` envelope on
- * patched hosts and degrades to a single choice on plain hosts.
+ * patched hosts, a `□`/`☑` accumulation loop on Pi GPUI, and degrades to a single
+ * choice on other plain hosts.
  *
  * Local fork: the walker is a stepper, not a one-way loop. Every title carries a
  * `[Q i/n #session M?]` progress marker. `M` marks a multi-select question. The
  * patched pi-web card reads it to show a step chip, radio/checkbox controls and
  * "← 上一题" / "下一题 →" buttons; back returns a `{"__piRich":1,"nav":"back"}`
- * envelope. Plain hosts type `/back` instead. The last question submits directly —
- * there is no review card.
+ * envelope. Plain hosts type `/back` instead. Pi GPUI 0.2.x cannot type into a
+ * select, so it gets explicit `← 上一题` / `完成选择 →` rows and a `□`/`☑`
+ * accumulation loop. The last question submits directly — there is no review
+ * card. The patched pi-web card path is unchanged.
  */
 
 import { randomUUID } from "node:crypto";
@@ -48,6 +51,30 @@ const MAX_PREVIEW_CHARS = 600;
 
 /** Plain-host back command. The patched card sends a `nav:"back"` envelope instead. */
 const BACK_COMMAND = "/back";
+
+/**
+ * Pi GPUI native stepper labels. Only that host receives these rows.
+ * `□` / `☑` are text markers, not native checkbox widgets.
+ */
+const NATIVE_BACK_LABEL = "← 上一题";
+const NATIVE_FINISH_LABEL = "完成选择 →";
+const NATIVE_REUSE_LABEL = "沿用上次答案 →";
+const NATIVE_UNCHECKED = "□ ";
+const NATIVE_CHECKED = "☑ ";
+
+/**
+ * Pi GPUI starts pi with `--extension .../pi-gpui-bridge.ts`. pi-web's launcher
+ * sets PI_WEB_NO_OPEN=1 and never passes that bridge. Detection failure keeps
+ * the original one-shot plain-host path, so pi-web stays byte-identical.
+ */
+function detectNativeStepHost(): boolean {
+	if (process.env.PI_WEB_NO_OPEN === "1") return false;
+	try {
+		return process.argv.some((arg) => /pi-gpui-bridge\.ts$/i.test(arg));
+	} catch {
+		return false;
+	}
+}
 
 /** Internal signal: the user asked to revisit the previous question. */
 const NAV_BACK = Symbol("rpc.nav.back");
@@ -218,6 +245,22 @@ function withNav(title: string, nav: NavMeta): string {
 	return `${title}\n${buildNavLine(nav)}`;
 }
 
+/** Previous answer shown on a revisited Pi GPUI question. Data, not help text. */
+function nativePreviousLine(previous?: QuestionAnswer): string {
+	if (!previous) return "";
+	const parts: string[] = [];
+	if (previous.selected && previous.selected.length > 0) parts.push(previous.selected.join("、"));
+	if (previous.answer) parts.push(previous.answer);
+	const text = parts.filter((part, i) => parts.indexOf(part) === i).join("；");
+	return text ? `\n上次：${text}` : "";
+}
+
+/** Pi GPUI title: clean marker line, no `/back` hint, optional previous answer. */
+function withNativeNav(title: string, nav: NavMeta, previous?: QuestionAnswer): string {
+	const marker = `[Q ${nav.index + 1}/${nav.total} #${nav.session}${nav.multi ? " M" : ""}]`;
+	return `${title}\n${marker}${nativePreviousLine(previous)}`;
+}
+
 function isBackText(raw: string): boolean {
 	return raw.trim().toLowerCase() === BACK_COMMAND;
 }
@@ -233,7 +276,11 @@ function collectAnswers(byIndex: ReadonlyMap<number, QuestionAnswer>): QuestionA
  * without discarding answers already collected for later questions. A normal
  * answer advances one step; answering the last question ends the run immediately.
  */
-export async function runRpcQuestionnaire(ui: DialogUI, params: QuestionParams): Promise<QuestionnaireResult> {
+export async function runRpcQuestionnaire(
+	ui: DialogUI,
+	params: QuestionParams,
+	nativeStepper: boolean = detectNativeStepHost(),
+): Promise<QuestionnaireResult> {
 	const total = params.questions.length;
 	const byIndex = new Map<number, QuestionAnswer>();
 	const session = randomUUID().slice(0, 8);
@@ -250,9 +297,10 @@ export async function runRpcQuestionnaire(ui: DialogUI, params: QuestionParams):
 			canBack: qi > 0,
 			multi: q.multiSelect === true,
 		};
+		const previous = byIndex.get(qi);
 		const outcome = nav.multi
-			? await askMultiSelect(ui, q, qi, header, nav)
-			: await askSingleSelect(ui, q, qi, header, nav);
+			? await askMultiSelect(ui, q, qi, header, nav, nativeStepper, previous)
+			: await askSingleSelect(ui, q, qi, header, nav, nativeStepper, previous);
 		if (outcome === undefined) return { answers: collectAnswers(byIndex), cancelled: true };
 		if (outcome === NAV_BACK) {
 			if (qi > 0) qi -= 1;
@@ -283,17 +331,39 @@ async function askSingleSelect(
 	questionIndex: number,
 	header: string,
 	nav: NavMeta,
+	nativeStepper: boolean,
+	previous?: QuestionAnswer,
 ): Promise<AskOutcome> {
-	const options = q.options.map(formatOptionLine);
-	options.push(`${q.options.length + 1}. ${displayLabel("other")}`);
-	const title = withNav(`${header}${q.question}${buildPreviewBlock(q)}`, nav);
+	const userLines = q.options.map(formatOptionLine);
+	const otherLine = `${q.options.length + 1}. ${displayLabel("other")}`;
+	const options = [...userLines, otherLine];
+	if (nativeStepper && nav.canBack) options.push(NATIVE_BACK_LABEL);
+	if (nativeStepper && previous) options.push(NATIVE_REUSE_LABEL);
+	const baseTitle = `${header}${q.question}${buildPreviewBlock(q)}`;
+	const title = nativeStepper
+		? withNativeNav(baseTitle, nav, previous)
+		: withNav(baseTitle, nav);
+	const customTitle = nativeStepper
+		? withNativeNav(
+				`${header}${q.question}\n\n${userLines.join("\n")}\n\n${t("rpc.custom_answer_title", CUSTOM_ANSWER_TITLE)}`,
+				nav,
+				previous,
+			)
+		: withNav(
+				`${header}${q.question}\n\n${userLines.join("\n")}\n\n${t("rpc.custom_answer_title", CUSTOM_ANSWER_TITLE)}`,
+				nav,
+			);
 	for (;;) {
 		const chosen = await ui.select(title, options);
 		if (chosen == null) return undefined;
 		if (nav.canBack && isBackText(chosen)) return NAV_BACK;
+		if (nativeStepper && chosen === NATIVE_BACK_LABEL && nav.canBack) return NAV_BACK;
+		if (nativeStepper && chosen === NATIVE_REUSE_LABEL && previous) return previous;
 		const rich = parseRichSelection(chosen);
 		if (rich) {
 			if (nav.canBack && rich.nav === "back") return NAV_BACK;
+			if (nativeStepper && rich.option === NATIVE_BACK_LABEL && nav.canBack) return NAV_BACK;
+			if (nativeStepper && rich.option === NATIVE_REUSE_LABEL && previous) return previous;
 			const attachments = await materializeAttachments(rich);
 			if (rich.skip) {
 				return { questionIndex, question: q.question, kind: "custom", answer: appendAttachments(null, attachments) };
@@ -338,10 +408,7 @@ async function askSingleSelect(
 		}
 		// "Type something." sentinel → free-text follow-up; cancelling it, or a blank reply (#301),
 		// goes back to the options.
-		const typed = await ui.input(
-			withNav(`${header}${q.question}\n\n${q.options.map(formatOptionLine).join("\n")}\n\n${t("rpc.custom_answer_title", CUSTOM_ANSWER_TITLE)}`, nav),
-			"",
-		);
+		const typed = await ui.input(customTitle, "");
 		if (nav.canBack && typed != null && isBackText(typed)) return NAV_BACK;
 		if (typed == null || typed.trim().length === 0) continue;
 		return { questionIndex, question: q.question, kind: "custom", answer: typed };
@@ -402,54 +469,154 @@ async function askMultiSelect(
 	questionIndex: number,
 	header: string,
 	nav: NavMeta,
+	nativeStepper: boolean,
+	previous?: QuestionAnswer,
 ): Promise<AskOutcome> {
-	const lines = q.options.map(formatOptionLine);
-	const options = [...lines, `${q.options.length + 1}. ${displayLabel("other")}`];
-	const title = withNav(
-		`${header}${q.question}\n\n${lines.join("\n")}\n\n${t("rpc.multi_instructions", MULTI_SELECT_INSTRUCTIONS)}`,
-		nav,
-	);
-	const otherPrompt = withNav(
-		`${header}${q.question}\n\n${lines.join("\n")}\n\n${t("rpc.custom_answer_title", CUSTOM_ANSWER_TITLE)}`,
-		nav,
-	);
+	const baseLines = q.options.map(formatOptionLine);
+	const otherLine = `${q.options.length + 1}. ${displayLabel("other")}`;
+	const baseTitle = `${header}${q.question}`;
+	const title = nativeStepper
+		? withNativeNav(baseTitle, nav, previous)
+		: withNav(
+				`${baseTitle}\n\n${baseLines.join("\n")}\n\n${t("rpc.multi_instructions", MULTI_SELECT_INSTRUCTIONS)}`,
+				nav,
+			);
+	const otherPrompt = nativeStepper
+		? withNativeNav(
+				`${baseTitle}\n\n${baseLines.join("\n")}\n\n${t("rpc.custom_answer_title", CUSTOM_ANSWER_TITLE)}`,
+				nav,
+				previous,
+			)
+		: withNav(
+				`${baseTitle}\n\n${baseLines.join("\n")}\n\n${t("rpc.custom_answer_title", CUSTOM_ANSWER_TITLE)}`,
+				nav,
+			);
+
+	// Non-native plain hosts keep the original one-shot path.
+	if (!nativeStepper) {
+		const options = [...baseLines, otherLine];
+		for (;;) {
+			const chosen = await ui.select(title, options);
+			if (chosen == null) return undefined;
+			if (nav.canBack && isBackText(chosen)) return NAV_BACK;
+			const rich = parseRichSelection(chosen);
+			if (nav.canBack && rich?.nav === "back") return NAV_BACK;
+			const attachments = await materializeAttachments(rich);
+			if (rich?.selected !== undefined) {
+				const answer = buildMultiAnswer(q, questionIndex, rich.selected, rich.other ?? "", attachments);
+				if (answer) return answer;
+				continue;
+			}
+			const line = options.indexOf(chosen);
+			if (line >= q.options.length) {
+				const typed = await ui.input(otherPrompt, MULTI_SELECT_PLACEHOLDER);
+				if (typed == null) continue;
+				if (nav.canBack && isBackText(typed)) return NAV_BACK;
+				const parsed = parseMultiInput(typed, q.options.length);
+				const answer = buildMultiAnswer(
+					q, questionIndex, parsed?.indexes ?? [], parsed ? parsed.custom : typed, attachments,
+				);
+				if (answer) return answer;
+				continue;
+			}
+			if (line >= 0) {
+				const answer = buildMultiAnswer(q, questionIndex, [line], "", attachments);
+				if (answer) return answer;
+				continue;
+			}
+			const parsedText = parseMultiInput(chosen, q.options.length);
+			const answer = buildMultiAnswer(
+				q, questionIndex, parsedText?.indexes ?? [], parsedText ? parsedText.custom : chosen, attachments,
+			);
+			if (answer) return answer;
+		}
+	}
+
+	// Pi GPUI native stepper: re-issue select after each toggle.
+	const selected: number[] = [];
+	let custom = "";
+	let attachments: string[] = [];
+	if (previous?.selected) {
+		for (const label of previous.selected) {
+			const i = q.options.findIndex((o) => o.label === label);
+			if (i >= 0 && !selected.includes(i)) selected.push(i);
+		}
+	}
+	if (previous?.answer) custom = previous.answer;
+
+	const toggle = (index: number) => {
+		const at = selected.indexOf(index);
+		if (at >= 0) selected.splice(at, 1);
+		else selected.push(index);
+	};
+	const addIndexes = (indexes: readonly number[]) => {
+		for (const i of indexes) if (!selected.includes(i)) selected.push(i);
+	};
+
 	for (;;) {
+		const displayLines = q.options.map((o, i) =>
+			formatOptionLine(
+				{ ...o, label: `${selected.includes(i) ? NATIVE_CHECKED : NATIVE_UNCHECKED}${o.label}` },
+				i,
+			),
+		);
+		const options = [...displayLines, otherLine, NATIVE_FINISH_LABEL];
+		if (nav.canBack) options.push(NATIVE_BACK_LABEL);
+		if (previous) options.push(NATIVE_REUSE_LABEL);
 		const chosen = await ui.select(title, options);
 		if (chosen == null) return undefined;
 		if (nav.canBack && isBackText(chosen)) return NAV_BACK;
+		if (chosen === NATIVE_BACK_LABEL && nav.canBack) return NAV_BACK;
+		if (chosen === NATIVE_REUSE_LABEL && previous) return previous;
 		const rich = parseRichSelection(chosen);
-		if (nav.canBack && rich?.nav === "back") return NAV_BACK;
-		const attachments = await materializeAttachments(rich);
-
-		// Patched card: checkbox indexes plus optional typed text in one envelope.
-		if (rich?.selected !== undefined) {
-			const answer = buildMultiAnswer(q, questionIndex, rich.selected, rich.other ?? "", attachments);
-			if (answer) return answer;
+		if (rich) {
+			if (nav.canBack && rich.nav === "back") return NAV_BACK;
+			if (rich.option === NATIVE_BACK_LABEL && nav.canBack) return NAV_BACK;
+			if (rich.option === NATIVE_REUSE_LABEL && previous) return previous;
+			attachments = await materializeAttachments(rich);
+			if (rich.selected !== undefined) {
+				const answer = buildMultiAnswer(q, questionIndex, rich.selected, rich.other ?? "", attachments);
+				if (answer) return answer;
+				continue;
+			}
+			if (rich.other !== undefined) custom = rich.other;
+			if (rich.option !== undefined) {
+				const line = displayLines.indexOf(rich.option);
+				if (line >= 0) toggle(line);
+				else if (!rich.option.startsWith(RICH_SELECTION_PREFIX)) custom = rich.option;
+			}
 			continue;
 		}
-		// Plain hosts: a single chosen option, the "other" row, or a numbers string.
-		const line = options.indexOf(chosen);
-		if (line >= q.options.length) {
+		const line = displayLines.indexOf(chosen);
+		if (line >= 0) {
+			toggle(line);
+			continue;
+		}
+		if (chosen === otherLine) {
 			const typed = await ui.input(otherPrompt, MULTI_SELECT_PLACEHOLDER);
 			if (typed == null) continue;
 			if (nav.canBack && isBackText(typed)) return NAV_BACK;
 			const parsed = parseMultiInput(typed, q.options.length);
-			const answer = buildMultiAnswer(
-				q, questionIndex, parsed?.indexes ?? [], parsed ? parsed.custom : typed, attachments,
-			);
+			if (parsed) {
+				addIndexes(parsed.indexes);
+				if (parsed.custom) custom = parsed.custom;
+			} else {
+				custom = typed;
+			}
+			continue;
+		}
+		if (chosen === NATIVE_FINISH_LABEL) {
+			const answer = buildMultiAnswer(q, questionIndex, selected, custom, attachments);
 			if (answer) return answer;
 			continue;
 		}
-		if (line >= 0) {
-			const answer = buildMultiAnswer(q, questionIndex, [line], "", attachments);
-			if (answer) return answer;
-			continue;
-		}
-		// Some hosts let the user type directly into the select box (e.g. "1,3").
+		// Some hosts let the user type directly into the select box.
 		const parsedText = parseMultiInput(chosen, q.options.length);
-		const answer = buildMultiAnswer(
-			q, questionIndex, parsedText?.indexes ?? [], parsedText ? parsedText.custom : chosen, attachments,
-		);
-		if (answer) return answer;
+		if (parsedText) {
+			addIndexes(parsedText.indexes);
+			if (parsedText.custom) custom = parsedText.custom;
+		} else {
+			custom = chosen;
+		}
 	}
 }

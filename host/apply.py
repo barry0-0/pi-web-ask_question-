@@ -27,16 +27,40 @@ import re
 import shutil
 import subprocess
 import sys
+import subprocess
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SOURCE = os.path.join(HERE, "rich_dialog_web.js")
 BACKUPS = os.environ.get("PI_ASK_BACKUP_DIR") or os.path.join(HERE, "backups")
 NODE_BIN = os.environ.get("PI_ASK_NODE") or "node"
-DEFAULT_APP_DIR = os.path.join(
-    os.path.expanduser("~"),
-    ".local/lib/node_modules/@agegr/pi-web/.next/static/chunks/app",
-)
+def default_app_dir():
+    """npm 全局 root 优先；升级后旧 ~/.local 安装可能被清理。"""
+    roots = []
+    try:
+        root = subprocess.check_output(
+            ["npm", "root", "-g"], text=True, timeout=5
+        ).strip()
+        if root:
+            roots.append(root)
+    except Exception:
+        pass
+    roots.extend([
+        "/opt/homebrew/lib/node_modules",
+        "/usr/local/lib/node_modules",
+        os.path.join(os.path.expanduser("~"), ".local/lib/node_modules"),
+    ])
+    for root in dict.fromkeys(roots):
+        candidate = os.path.join(root, "@agegr/pi-web/.next/static/chunks/app")
+        if os.path.isdir(candidate):
+            return candidate
+    return os.path.join(
+        os.path.expanduser("~"),
+        ".local/lib/node_modules/@agegr/pi-web/.next/static/chunks/app",
+    )
+
+
+DEFAULT_APP_DIR = default_app_dir()
 
 START = "/*__PI_WEB_RICH_QUESTION_START__*/"
 END = "/*__PI_WEB_RICH_QUESTION_END__*/"
